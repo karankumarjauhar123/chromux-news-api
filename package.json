@@ -1,0 +1,13 @@
+{
+  "name": "chromux-news-api",
+  "version": "1.0.0",
+  "description": "Vercel serverless RSS aggregator for Chromux News",
+  "main": "api/cron.js",
+  "scripts": {
+    "start": "node test.js"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.3.5",
+    "node-fetch": "^3.3.2"
+  }
+}
