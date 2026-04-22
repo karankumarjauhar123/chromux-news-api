@@ -2,7 +2,7 @@ const { sources } = require('../lib/sources');
 const { parseFeed } = require('../lib/parser');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch'); // using Vercel native Node 18 fetch, but we added node-fetch just in case
+// Node 18+ has built-in global fetch — no require needed
 
 // Deduplicate logic
 function findTrendingAndDedup(allArticles) {
@@ -19,7 +19,7 @@ function findTrendingAndDedup(allArticles) {
     for (const key in groups) {
         const group = groups[key];
         group.sort((x, y) => y.p - x.p); // newest first
-        const mainArt = group[0];
+        const mainArt = { ...group[0] };
         if (group.length > 1) {
             mainArt.as = group.slice(1).map(x => x.s); // alt sources
             if (group.length >= 5) mainArt.tr = 2; // Breaking
@@ -40,7 +40,7 @@ function saveFile(filename, data) {
     fs.writeFileSync(path.join(pubDir, filename), JSON.stringify(data));
 }
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
     console.log("Starting cron job fetching feeds...");
     
     const TS = Date.now();
