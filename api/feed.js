@@ -171,8 +171,9 @@ function findTrendingAndDedup(allArticles) {
                 articlesWithKeywords[j].keywords
             );
 
-            // Similarity > 0.45 = same story from different source
-            if (sim > 0.45) {
+            // Similarity > 0.30 = same story from different source
+            // (English titles rephrase heavily, so we need a lower threshold)
+            if (sim > 0.30) {
                 group.push(articlesWithKeywords[j].article);
                 used.add(j);
             }
