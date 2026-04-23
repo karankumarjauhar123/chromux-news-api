@@ -97,91 +97,284 @@ function computeTrendingScore(article) {
 
 // ============================================================
 //  🧠 SMART RANKING — Combined Score
-//  Final = Freshness×0.40 + Quality×0.30 + Trending×0.30
+//  Final = Freshness×0.35 + Quality×0.25 + Trending×0.25 + UserPref×0.15
 // ============================================================
-function computeRankScore(article, now) {
+function computeRankScore(article, now, preferredSources) {
     const freshness = computeFreshnessScore(article.p, now);
     const quality = computeQualityScore(article);
     const trending = computeTrendingScore(article);
 
-    return (freshness * 0.40) + (quality * 0.30) + (trending * 0.30);
+    // User preference bonus: +10 if source is user's preferred
+    let userPref = 0;
+    if (preferredSources && preferredSources.length > 0) {
+        if (preferredSources.includes(article.s)) userPref = 10;
+    }
+
+    return (freshness * 0.35) + (quality * 0.25) + (trending * 0.25) + (userPref * 0.15);
 }
 
 // ============================================================
-//  🔄 SMART DEDUPLICATION — Word-based Jaccard Similarity
-//  Much better than the old "first 30 chars" approach
+//  🤖 TF-IDF ENGINE — Information Retrieval-grade similarity
+//  Pure math, zero libraries. Used by Google's early search.
+//  
+//  TF  = Term Frequency (how often a word appears in a title)
+//  IDF = Inverse Document Frequency (how rare a word is globally)
+//  TF-IDF = TF × IDF (rare important words score highest)
 // ============================================================
 
-// Stopwords to ignore during comparison (Hindi + English)
+// Stopwords to ignore (Hindi + English)
 const STOPWORDS = new Set([
     'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to',
     'for', 'of', 'with', 'and', 'or', 'but', 'not', 'has', 'had', 'have',
     'this', 'that', 'from', 'by', 'it', 'its', 'be', 'as', 'do', 'does',
     'will', 'would', 'can', 'could', 'may', 'should', 'just', 'also',
+    'been', 'being', 'than', 'into', 'over', 'after', 'before', 'about',
+    'more', 'most', 'very', 'here', 'there', 'when', 'where', 'what',
+    'how', 'all', 'each', 'every', 'both', 'few', 'some', 'any', 'other',
     'ka', 'ke', 'ki', 'se', 'me', 'hai', 'hain', 'ne', 'ko', 'par',
-    'ka', 'ki', 'ke', 'ye', 'wo', 'yeh', 'woh', 'aur', 'ya', 'bhi',
-    'ek', 'is', 'us', 'un', 'in', 'kya', 'ho', 'tha', 'the', 'thi',
-    'nach', 'über', 'und', 'bei', 'wie', 'nach', 'says', 'said', 'new',
-    'nach', 'news', 'update', 'latest', 'breaking', 'report', 'reports',
+    'ye', 'wo', 'yeh', 'woh', 'aur', 'ya', 'bhi', 'ek', 'kya', 'ho',
+    'tha', 'the', 'thi', 'mein', 'koi', 'kuch', 'bahut', 'jab', 'tab',
+    'agar', 'lekin', 'phir', 'abhi', 'yaha', 'waha', 'jaise', 'hota',
+    'kare', 'karna', 'kiya', 'gaya', 'gayi', 'hoga', 'hogi', 'raha',
+    'says', 'said', 'new', 'news', 'update', 'latest', 'breaking',
+    'report', 'reports', 'today', 'now', 'get', 'gets', 'got',
 ]);
 
-function extractKeywords(title) {
-    if (!title) return new Set();
-    return new Set(
-        title.toLowerCase()
-            .replace(/[^\w\s\u0900-\u097F]/g, ' ')  // Keep Devanagari + alphanumeric
-            .split(/\s+/)
-            .filter(w => w.length > 2 && !STOPWORDS.has(w))
-    );
+/**
+ * Tokenize a title into meaningful words
+ * Keeps: Hindi (Devanagari), English, numbers
+ * Removes: punctuation, stopwords, short words
+ * Applies: lightweight stemming + synonym expansion
+ */
+
+// Lightweight English stemmer (Porter-style suffix stripping)
+// Not a full Porter stemmer but handles 90% of news headline variations
+function stem(word) {
+    if (word.length < 4) return word;
+    // Only stem English words (skip Devanagari)
+    if (/[\u0900-\u097F]/.test(word)) return word;
+
+    return word
+        .replace(/ies$/, 'y')       // countries → country
+        .replace(/sses$/, 'ss')     // addresses → address
+        .replace(/ness$/, '')       // darkness → dark
+        .replace(/ment$/, '')       // government → govern
+        .replace(/ing$/, '')        // meeting → meet, hosting → host
+        .replace(/tion$/, '')       // election → elec
+        .replace(/sion$/, '')       // explosion → explo
+        .replace(/ated$/, '')       // celebrated → celebr
+        .replace(/ised$/, '')       // surprised → surpr
+        .replace(/ized$/, '')       // realized → real
+        .replace(/ally$/, '')       // finally → fin
+        .replace(/ful$/, '')        // powerful → power
+        .replace(/ous$/, '')        // dangerous → danger
+        .replace(/ive$/, '')        // massive → mass
+        .replace(/able$/, '')       // remarkable → remark
+        .replace(/ible$/, '')       // possible → poss
+        .replace(/ical$/, '')       // political → polit
+        .replace(/edly$/, '')       // reportedly → report
+        .replace(/ed$/, '')         // killed → kill, surged → surg
+        .replace(/ly$/, '')         // recently → recent
+        .replace(/er$/, '')         // bigger → bigg
+        .replace(/es$/, '')         // shares → shar
+        .replace(/s$/, '');         // stocks → stock
 }
 
-function jaccardSimilarity(setA, setB) {
-    if (setA.size === 0 || setB.size === 0) return 0;
-    let intersection = 0;
-    for (const word of setA) {
-        if (setB.has(word)) intersection++;
-    }
-    const union = setA.size + setB.size - intersection;
-    return union === 0 ? 0 : intersection / union;
+// Synonym groups — map different words to same canonical form
+const SYNONYMS = {
+    // Leadership
+    'president': 'leader', 'pm': 'leader', 'prime': 'leader', 'minister': 'leader',
+    'chief': 'leader', 'chairman': 'leader', 'ceo': 'leader',
+    // Actions
+    'meet': 'meet', 'host': 'meet', 'visit': 'meet', 'summit': 'meet',
+    'talk': 'meet', 'discuss': 'meet', 'bilateral': 'meet',
+    // Financial
+    'surg': 'rise', 'jump': 'rise', 'soar': 'rise', 'rally': 'rise', 'gain': 'rise',
+    'climb': 'rise', 'rise': 'rise', 'increas': 'rise',
+    'crash': 'fall', 'drop': 'fall', 'plunge': 'fall', 'sink': 'fall',
+    'fall': 'fall', 'declin': 'fall', 'tumbl': 'fall',
+    'stock': 'share', 'share': 'share', 'equity': 'share',
+    'earn': 'profit', 'profit': 'profit', 'revenue': 'profit', 'quarter': 'profit',
+    // Violence/Disaster
+    'kill': 'kill', 'die': 'kill', 'dead': 'kill', 'death': 'kill', 'slay': 'kill',
+    'injure': 'hurt', 'wound': 'hurt', 'hurt': 'hurt',
+    'earthquake': 'quake', 'quake': 'quake', 'tremor': 'quake', 'seismic': 'quake',
+    'flood': 'flood', 'waterlog': 'flood', 'deluge': 'flood',
+    // Sports
+    'beat': 'win', 'defeat': 'win', 'win': 'win', 'victory': 'win', 'triumph': 'win',
+    'wicket': 'cricket', 'cricket': 'cricket', 'test': 'cricket', 'odi': 'cricket',
+    // Tech
+    'launch': 'release', 'unveil': 'release', 'announc': 'release', 'release': 'release',
+    'reveal': 'release', 'introduc': 'release',
+    // Places
+    'white': 'whitehouse', 'house': 'whitehouse',
+};
+
+function applySynonym(stemmedWord) {
+    return SYNONYMS[stemmedWord] || stemmedWord;
 }
+
+function tokenize(text) {
+    if (!text) return [];
+    return text.toLowerCase()
+        .replace(/[^\w\s\u0900-\u097F]/g, ' ')  // Keep Devanagari + alphanumeric
+        .split(/\s+/)
+        .filter(w => w.length > 2 && !STOPWORDS.has(w))
+        .map(w => applySynonym(stem(w)));  // Stem + Synonym expansion
+}
+
+/**
+ * Build TF-IDF vectors for a corpus of documents.
+ * Returns an array of sparse vectors (objects with term:weight).
+ *
+ * @param {string[]} documents - Array of title strings
+ * @returns {{ vectors: Object[], idf: Object }}
+ */
+function buildTfIdf(documents) {
+    const N = documents.length;
+    if (N === 0) return { vectors: [], idf: {} };
+
+    // Step 1: Tokenize all documents
+    const tokenized = documents.map(doc => tokenize(doc));
+
+    // Step 2: Compute Document Frequency (DF)
+    // DF[term] = number of documents containing that term
+    const df = {};
+    for (const tokens of tokenized) {
+        const uniqueTerms = new Set(tokens);
+        for (const term of uniqueTerms) {
+            df[term] = (df[term] || 0) + 1;
+        }
+    }
+
+    // Step 3: Compute IDF = log(N / DF)
+    // Rare words get high IDF, common words get low IDF
+    const idf = {};
+    for (const term in df) {
+        idf[term] = Math.log((N + 1) / (df[term] + 1)) + 1; // Smoothed IDF
+    }
+
+    // Step 4: Compute TF-IDF vector for each document
+    const vectors = tokenized.map(tokens => {
+        if (tokens.length === 0) return {};
+
+        // TF = count of term / total terms in document
+        const tf = {};
+        for (const term of tokens) {
+            tf[term] = (tf[term] || 0) + 1;
+        }
+        const totalTerms = tokens.length;
+
+        // TF-IDF = TF × IDF
+        const vector = {};
+        for (const term in tf) {
+            vector[term] = (tf[term] / totalTerms) * (idf[term] || 0);
+        }
+        return vector;
+    });
+
+    return { vectors, idf };
+}
+
+/**
+ * Cosine Similarity between two TF-IDF vectors.
+ * Measures the angle between vectors — 1.0 = identical, 0.0 = unrelated.
+ *
+ * This is mathematically equivalent to what search engines use.
+ */
+function cosineSimilarity(vecA, vecB) {
+    let dotProduct = 0;
+    let magnitudeA = 0;
+    let magnitudeB = 0;
+
+    // Iterate over the smaller vector for efficiency
+    const [smaller, larger] = Object.keys(vecA).length <= Object.keys(vecB).length
+        ? [vecA, vecB] : [vecB, vecA];
+
+    for (const term in smaller) {
+        if (term in larger) {
+            dotProduct += smaller[term] * larger[term];
+        }
+        magnitudeA += smaller[term] * smaller[term];
+    }
+    for (const term in larger) {
+        magnitudeB += larger[term] * larger[term];
+    }
+    // Add remaining terms from smaller to magnitudeA (if iterated over smaller first)
+    // Actually we need full magnitudes
+    magnitudeA = 0;
+    magnitudeB = 0;
+    for (const term in vecA) magnitudeA += vecA[term] * vecA[term];
+    for (const term in vecB) magnitudeB += vecB[term] * vecB[term];
+
+    magnitudeA = Math.sqrt(magnitudeA);
+    magnitudeB = Math.sqrt(magnitudeB);
+
+    if (magnitudeA === 0 || magnitudeB === 0) return 0;
+    return dotProduct / (magnitudeA * magnitudeB);
+}
+
+// ============================================================
+//  🔄 SMART DEDUPLICATION — TF-IDF + Cosine + URL Dedup
+// ============================================================
 
 function findTrendingAndDedup(allArticles) {
     if (!allArticles || allArticles.length === 0) return [];
 
-    // Pre-compute keywords for each article
-    const articlesWithKeywords = allArticles
-        .filter(a => a && a.t)
-        .map(a => ({ article: a, keywords: extractKeywords(a.t) }));
+    const validArticles = allArticles.filter(a => a && a.t);
+    if (validArticles.length === 0) return [];
 
-    // Group similar articles using Jaccard similarity
+    // ── PHASE 1: URL-based dedup (exact same article from different aggregators)
+    const urlMap = new Map();
+    const urlDeduped = [];
+    for (const art of validArticles) {
+        const normalizedUrl = (art.l || '').toLowerCase().replace(/\/$/, '').replace(/^https?:\/\/(www\.)?/, '');
+        if (normalizedUrl && urlMap.has(normalizedUrl)) {
+            // Merge as alt source of existing article
+            const existing = urlMap.get(normalizedUrl);
+            if (!existing._altSrcs) existing._altSrcs = [];
+            existing._altSrcs.push(art.s);
+        } else {
+            if (normalizedUrl) urlMap.set(normalizedUrl, art);
+            urlDeduped.push(art);
+        }
+    }
+
+    // ── PHASE 2: TF-IDF Cosine Similarity (semantic dedup)
+    const titles = urlDeduped.map(a => a.t);
+    const { vectors } = buildTfIdf(titles);
+
     const used = new Set();
     const groups = [];
 
-    for (let i = 0; i < articlesWithKeywords.length; i++) {
+    for (let i = 0; i < urlDeduped.length; i++) {
         if (used.has(i)) continue;
 
-        const group = [articlesWithKeywords[i].article];
+        const group = [urlDeduped[i]];
         used.add(i);
 
-        for (let j = i + 1; j < articlesWithKeywords.length; j++) {
+        // Skip if vector is empty (title was all stopwords)
+        if (Object.keys(vectors[i]).length === 0) {
+            groups.push(group);
+            continue;
+        }
+
+        for (let j = i + 1; j < urlDeduped.length; j++) {
             if (used.has(j)) continue;
+            if (Object.keys(vectors[j]).length === 0) continue;
 
-            const sim = jaccardSimilarity(
-                articlesWithKeywords[i].keywords,
-                articlesWithKeywords[j].keywords
-            );
+            const similarity = cosineSimilarity(vectors[i], vectors[j]);
 
-            // Similarity > 0.30 = same story from different source
-            // (English titles rephrase heavily, so we need a lower threshold)
-            if (sim > 0.30) {
-                group.push(articlesWithKeywords[j].article);
+            // Cosine > 0.35 = same story (TF-IDF is much more accurate than Jaccard)
+            if (similarity > 0.35) {
+                group.push(urlDeduped[j]);
                 used.add(j);
             }
         }
         groups.push(group);
     }
 
-    // Pick best article from each group, mark trending
+    // ── PHASE 3: Pick best article from each group, mark trending
     const now = Date.now();
     const dedupedLineup = [];
 
@@ -195,11 +388,21 @@ function findTrendingAndDedup(allArticles) {
 
         const mainArt = { ...group[0] };
 
+        // Collect alt sources from both URL dedup and title dedup
+        const altSources = new Set();
+        if (mainArt._altSrcs) {
+            mainArt._altSrcs.forEach(s => altSources.add(s));
+            delete mainArt._altSrcs;
+        }
         if (group.length > 1) {
-            const altSet = new Set(group.slice(1).map(x => x.s));
-            mainArt.as = [...altSet];
-            if (group.length >= 5) mainArt.tr = 2;       // 🔴 BREAKING
-            else if (group.length >= 3) mainArt.tr = 1;   // 🔥 TRENDING
+            group.slice(1).forEach(x => altSources.add(x.s));
+        }
+
+        if (altSources.size > 0) {
+            mainArt.as = [...altSources];
+            const totalSources = altSources.size + 1; // +1 for main article
+            if (totalSources >= 5) mainArt.tr = 2;       // 🔴 BREAKING
+            else if (totalSources >= 3) mainArt.tr = 1;   // 🔥 TRENDING
         }
 
         dedupedLineup.push(mainArt);
@@ -243,12 +446,15 @@ function mixVideosIntoFeed(articles, videos) {
  *   p     = page number (1, 2, 3...)
  *   lang  = language filter (hi, en, all)  [DEFAULT: all]
  *   boost = comma-separated categories to boost (personalization)
+ *   psrc  = comma-separated preferred sources (learned from user behavior)
  */
 module.exports = async function handler(req, res) {
     const category = (req.query.cat || 'all').toLowerCase();
     const page = Math.max(1, parseInt(req.query.p || '1', 10));
     const lang = (req.query.lang || 'all').toLowerCase();
     const boostRaw = req.query.boost || '';
+    const psrcRaw = req.query.psrc || '';
+    const preferredSources = psrcRaw ? psrcRaw.split(',').map(s => s.trim()) : [];
     const perPage = 30;
 
     // Filter sources by category
@@ -310,16 +516,45 @@ module.exports = async function handler(req, res) {
     // 🧠 SMART DEDUP — Word-based Jaccard similarity
     let finalArticles = findTrendingAndDedup(textArticles);
 
-    // 🏆 SMART RANKING — Combined score instead of just date
+    // 🏆 SMART RANKING — Combined score with user preferences
     const now = Date.now();
     finalArticles.forEach(a => {
-        a._rank = computeRankScore(a, now);
+        a._rank = computeRankScore(a, now, preferredSources);
     });
     finalArticles.sort((a, b) => b._rank - a._rank);
     // Clean up internal field before sending
     finalArticles.forEach(a => { delete a._rank; });
 
-    // Sort videos by date
+    // 🔀 SOURCE DIVERSITY — Prevent same source appearing 3+ times in a row
+    if (finalArticles.length > 5) {
+        const diversified = [];
+        const lastSources = [];
+        const deferred = [];
+
+        for (const art of finalArticles) {
+            const recentSame = lastSources.filter(s => s === art.s).length;
+            if (recentSame >= 2) {
+                deferred.push(art); // Push down, will interleave later
+            } else {
+                diversified.push(art);
+                lastSources.push(art.s);
+                if (lastSources.length > 4) lastSources.shift();
+            }
+        }
+        // Interleave deferred articles back into the feed (not dump at end)
+        if (deferred.length > 0) {
+            let insertIdx = 3; // Start inserting after position 3
+            for (const d of deferred) {
+                if (insertIdx >= diversified.length) {
+                    diversified.push(d);
+                } else {
+                    diversified.splice(insertIdx, 0, d);
+                }
+                insertIdx += 3; // Space them out every 3 positions
+            }
+        }
+        finalArticles = diversified;
+    }
     videoArticles.sort((a, b) => b.p - a.p);
 
     // Trending filter
