@@ -12,7 +12,7 @@ const SOURCE_TIERS = {
     'BBC News': 3, 'Reuters': 3, 'The Guardian': 3, 'CNN': 3,
     'Al Jazeera': 3, 'Associated Press': 3, 'NY Times World': 3,
     'Washington Post': 3, 'Bloomberg': 3, 'TIME': 3, 'NPR World': 3,
-    'Nature': 3, 'NASA': 3, 'BBC Hindi': 3,
+    'Nature': 3, 'NASA': 3, 'BBC Hindi': 3, 'DW English': 3,
     // Tier 3 — Premium India
     'Times of India': 3, 'Hindustan Times': 3, 'Indian Express': 3,
     'NDTV': 3, 'NDTV India': 3, 'The Hindu': 3, 'India Today': 3,
@@ -21,17 +21,17 @@ const SOURCE_TIERS = {
     // Tier 3 — Premium Tech
     'TechCrunch': 3, 'The Verge': 3, 'Ars Technica': 3, 'Wired': 3,
     // Tier 2 — Established
-    'Zee News Hindi': 2, 'ABP News': 2, 'Amar Ujala': 2,
+    'Zee News': 2, 'ABP News': 2, 'Amar Ujala': 2,
     'Live Hindustan': 2, 'India TV Hindi': 2, 'News18 Hindi': 2,
-    'Deccan Herald': 2, 'The Tribune': 2, 'Business Standard': 2,
+    'TV9 Bharatvarsh': 2, 'News18 English': 2,
+    'Business Standard': 2, 'Moneycontrol': 2, 'LiveMint': 2,
     'CNBC': 2, 'Forbes': 2, 'ESPN Cricket': 2, 'Sky Sports': 2,
-    'France 24': 2, 'DW English': 2, 'DW Hindi': 2,
-    'Variety': 2, 'Hollywood Reporter': 2, 'IGN': 2,
-    'Android Authority': 2, 'Engadget': 2, 'CNET': 2,
-    'Moneycontrol': 2, 'LiveMint': 2, 'Financial Express': 2,
+    'France 24': 2, 'Variety': 2, 'Hollywood Reporter': 2, 'IGN': 2,
+    'Android Authority': 2, 'CNET': 2,
     'NDTV Sports': 2, 'Scroll.in': 2, 'The Wire': 2, 'Firstpost': 2,
-    'Patrika': 2, 'TV9 Bharatvarsh': 2, 'News18 English': 2,
+    'The Tribune': 2, 'Mint': 2, 'The Print': 2,
     'Scientific American': 2, 'Space.com': 2,
+    'Sportskeeda Hindi': 2, 'VentureBeat': 2, 'Gadgets 360': 2,
 };
 
 function getSourceTier(sourceName) {
@@ -515,6 +515,49 @@ module.exports = async function handler(req, res) {
 
     // 🧠 SMART DEDUP — Word-based Jaccard similarity
     let finalArticles = findTrendingAndDedup(textArticles);
+
+    // 🖼️ CROSS-SOURCE IMAGE DEDUP — Detect repeated logos that slipped through blocklist
+    // If the same image URL appears in 3+ articles, it's a channel logo, not article content
+    if (finalArticles.length > 5) {
+        const imgCount = {};
+        for (const art of finalArticles) {
+            if (art.i && typeof art.i === 'string' && art.i.length > 10) {
+                // Normalize: strip wsrv wrapper to compare raw source URLs
+                let rawImg = art.i;
+                if (rawImg.includes('wsrv.nl')) {
+                    try {
+                        const match = rawImg.match(/[?&]url=([^&]+)/);
+                        if (match) rawImg = decodeURIComponent(match[1]);
+                    } catch (_) {}
+                }
+                const key = rawImg.toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+                imgCount[key] = (imgCount[key] || 0) + 1;
+            }
+        }
+        // Collect keys appearing 3+ times
+        const logoImgKeys = new Set();
+        for (const [key, count] of Object.entries(imgCount)) {
+            if (count >= 3) logoImgKeys.add(key);
+        }
+        if (logoImgKeys.size > 0) {
+            console.log(`[ImageDedup] Nulling ${logoImgKeys.size} repeated logo image(s) found in 3+ articles`);
+            for (const art of finalArticles) {
+                if (art.i) {
+                    let rawImg = art.i;
+                    if (rawImg.includes('wsrv.nl')) {
+                        try {
+                            const match = rawImg.match(/[?&]url=([^&]+)/);
+                            if (match) rawImg = decodeURIComponent(match[1]);
+                        } catch (_) {}
+                    }
+                    const key = rawImg.toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+                    if (logoImgKeys.has(key)) {
+                        art.i = null; // Clear logo — client will show branded fallback
+                    }
+                }
+            }
+        }
+    }
 
     // 🏆 SMART RANKING — Combined score with user preferences
     const now = Date.now();
