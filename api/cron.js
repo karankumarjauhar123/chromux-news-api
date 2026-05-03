@@ -229,8 +229,14 @@ module.exports = async function handler(req, res) {
     console.log("Starting full news fetch and Firebase sync...");
     const TS = Date.now();
     
-    // Simple secret check (if provided in env or query)
-    if (req.query.secret && process.env.CRON_SECRET && req.query.secret !== process.env.CRON_SECRET) {
+    // Require a shared secret because this endpoint can rewrite the whole news cache.
+    const expectedSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers.authorization || '';
+    const providedSecret = req.query.secret || authHeader.replace(/^Bearer\s+/i, '');
+    if (!expectedSecret) {
+        return res.status(500).json({ error: "CRON_SECRET is not configured" });
+    }
+    if (providedSecret !== expectedSecret) {
         return res.status(401).json({ error: "Unauthorized" });
     }
 
