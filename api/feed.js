@@ -43,7 +43,8 @@ module.exports = async function handler(req, res) {
     try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 4000); // 4s max wait
-        const response = await fetch(`${FIREBASE_DB_URL}news.json`, {
+        const fbAuth = process.env.FIREBASE_DB_SECRET ? `?auth=${process.env.FIREBASE_DB_SECRET}` : '';
+        const response = await fetch(`${FIREBASE_DB_URL}news.json${fbAuth}`, {
             signal: controller.signal
         });
         clearTimeout(timer);
@@ -60,11 +61,10 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ v: 4, ts: Date.now(), page: 1, totalPages: 1, total: 0, articles: [] });
     }
 
-    // 2. GET BASE ARTICLES
     let baseArticles = [];
     if (lang === 'hi' || lang === 'en') {
         // User strictly wants a language
-        baseArticles = fbData.languages[lang] || [];
+        baseArticles = [...((fbData.languages && fbData.languages[lang]) || [])];
         if (category !== 'all' && category !== 'trending') {
             baseArticles = baseArticles.filter(a => a.c === category);
         } else if (category === 'trending') {
@@ -73,9 +73,9 @@ module.exports = async function handler(req, res) {
     } else {
         // Language 'all' -> select by category
         if (category === 'trending') {
-            baseArticles = (fbData.categories['all'] || []).filter(a => a.tr > 0);
+            baseArticles = [...(fbData.categories['all'] || [])].filter(a => a.tr > 0);
         } else {
-            baseArticles = fbData.categories[category] || fbData.categories['all'] || [];
+            baseArticles = [...(fbData.categories[category] || fbData.categories['all'] || [])];
         }
     }
 
@@ -86,11 +86,9 @@ module.exports = async function handler(req, res) {
     // 3. APPLY USER PERSONALIZATION ON THE FLY
     // Because data is already fetched, personalization is instant (< 10ms)
     
-    // User Preference Bonus: Give bump to articles from preferred sources
     if (preferredSources.length > 0) {
         baseArticles.forEach(a => {
             if (preferredSources.includes(a.s)) {
-                // To avoid breaking the existing sort entirely, we just move preferred items up slightly
                 a._boost = 1;
             } else {
                 a._boost = 0;
@@ -101,6 +99,7 @@ module.exports = async function handler(req, res) {
             if (a._boost === b._boost) return 0;
             return b._boost - a._boost;
         });
+        baseArticles.forEach(a => { delete a._boost; });
     }
 
     // Category Boost Bonus

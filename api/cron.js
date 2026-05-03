@@ -74,13 +74,17 @@ function computeRankScore(article, now) {
 //  🤖 TF-IDF ENGINE
 // ============================================================
 const STOPWORDS = new Set([
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'and', 'or', 'but', 'not', 'has', 'had', 'have', 'this', 'that', 'from', 'by', 'it', 'its', 'be', 'as', 'do', 'does', 'will', 'would', 'can', 'could', 'may', 'should', 'just', 'also', 'been', 'being', 'than', 'into', 'over', 'after', 'before', 'about', 'more', 'most', 'very', 'here', 'there', 'when', 'where', 'what', 'how', 'all', 'each', 'every', 'both', 'few', 'some', 'any', 'other', 'ka', 'ke', 'ki', 'se', 'me', 'hai', 'hain', 'ne', 'ko', 'par', 'ye', 'wo', 'yeh', 'woh', 'aur', 'ya', 'bhi', 'ek', 'kya', 'ho', 'tha', 'the', 'thi', 'mein', 'koi', 'kuch', 'bahut', 'jab', 'tab', 'agar', 'lekin', 'phir', 'abhi', 'yaha', 'waha', 'jaise', 'hota', 'kare', 'karna', 'kiya', 'gaya', 'gayi', 'hoga', 'hogi', 'raha', 'says', 'said', 'new', 'news', 'update', 'latest', 'breaking', 'report', 'reports', 'today', 'now', 'get', 'gets', 'got',
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'and', 'or', 'but', 'not', 'has', 'had', 'have', 'this', 'that', 'from', 'by', 'it', 'its', 'be', 'as', 'do', 'does', 'will', 'would', 'can', 'could', 'may', 'should', 'just', 'also', 'been', 'being', 'than', 'into', 'over', 'after', 'before', 'about', 'more', 'most', 'very', 'here', 'there', 'when', 'where', 'what', 'how', 'all', 'each', 'every', 'both', 'few', 'some', 'any', 'other', 'ka', 'ke', 'ki', 'se', 'me', 'hai', 'hain', 'ne', 'ko', 'par', 'ye', 'wo', 'yeh', 'woh', 'aur', 'ya', 'bhi', 'ek', 'kya', 'ho', 'tha', 'the', 'thi', 'mein', 'koi', 'kuch', 'bahut', 'jab', 'tab', 'agar', 'lekin', 'phir', 'abhi', 'yaha', 'waha', 'jaise', 'hota', 'kare', 'karna', 'kiya', 'gaya', 'gayi', 'hoga', 'hogi', 'raha', 'says', 'said', 'new', 'news', 'update', 'latest', 'breaking', 'report', 'reports', 'today', 'now', 'get', 'gets', 'got', 'है', 'के', 'की', 'में', 'से', 'को', 'और', 'पर', 'ने', 'भी', 'एक', 'का', 'हो', 'गया', 'लिए', 'हैं'
 ]);
 
 function stem(word) {
     if (word.length < 4) return word;
     if (/[\u0900-\u097F]/.test(word)) return word;
-    return word.replace(/ies$/, 'y').replace(/sses$/, 'ss').replace(/ness$/, '').replace(/ment$/, '').replace(/ing$/, '').replace(/tion$/, '').replace(/sion$/, '').replace(/ated$/, '').replace(/ised$/, '').replace(/ized$/, '').replace(/ally$/, '').replace(/ful$/, '').replace(/ous$/, '').replace(/ive$/, '').replace(/able$/, '').replace(/ible$/, '').replace(/ical$/, '').replace(/edly$/, '').replace(/ed$/, '').replace(/ly$/, '').replace(/er$/, '').replace(/es$/, '').replace(/s$/, '');
+    return word.replace(/(ies|sses|ness|ment|ing|tion|sion|ated|ised|ized|ally|ful|ous|ive|able|ible|ical|edly|ed|ly|er|es|s)$/, match => {
+        if (match === 'ies') return 'y';
+        if (match === 'sses') return 'ss';
+        return '';
+    });
 }
 
 const SYNONYMS = {
@@ -135,10 +139,7 @@ function cosineSimilarity(vecA, vecB) {
     const [smaller, larger] = Object.keys(vecA).length <= Object.keys(vecB).length ? [vecA, vecB] : [vecB, vecA];
     for (const term in smaller) {
         if (term in larger) dotProduct += smaller[term] * larger[term];
-        magnitudeA += smaller[term] * smaller[term];
     }
-    for (const term in larger) magnitudeB += larger[term] * larger[term];
-    magnitudeA = 0; magnitudeB = 0;
     for (const term in vecA) magnitudeA += vecA[term] * vecA[term];
     for (const term in vecB) magnitudeB += vecB[term] * vecB[term];
     magnitudeA = Math.sqrt(magnitudeA); magnitudeB = Math.sqrt(magnitudeB);
@@ -387,8 +388,9 @@ module.exports = async function handler(req, res) {
 
     // WRITE TO FIREBASE (OVERWRITE)
     console.log("Writing to Firebase RTDB...");
+    const fbAuth = process.env.FIREBASE_DB_SECRET ? `?auth=${process.env.FIREBASE_DB_SECRET}` : '';
     try {
-        const fbRes = await fetch(`${FIREBASE_DB_URL}news.json`, {
+        const fbRes = await fetch(`${FIREBASE_DB_URL}news.json${fbAuth}`, {
             method: 'PUT', // PUT replaces the entire 'news' node
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(firebaseData)
