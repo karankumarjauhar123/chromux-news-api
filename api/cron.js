@@ -93,13 +93,66 @@ function fetchHttp2(url, timeoutMs = 10000) {
     });
 }
 
+// Decodes Google News encrypted article URL using batchexecute API
+async function decodeGoogleNewsUrl(googleUrl) {
+    try {
+        const response = await fetch(googleUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        if (!response.ok) return null;
+        const html = await response.text();
+        
+        const dataPMatch = html.match(/data-p=["']([^"']+)["']/i);
+        if (!dataPMatch) return null;
+        
+        const dataPStr = dataPMatch[1].replace(/&quot;/g, '"');
+        const obj = JSON.parse(dataPStr.replace('%.@.', '["garturlreq",'));
+        const reqPayload = [[["Fbv4je", JSON.stringify([...obj.slice(0, -6), ...obj.slice(-2)]), null, "generic"]]];
+        
+        const body = new URLSearchParams();
+        body.append('f.req', JSON.stringify(reqPayload));
+
+        const postResponse = await fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute', {
+            method: 'POST',
+            body: body,
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        if (!postResponse.ok) return null;
+        const text = await postResponse.text();
+        const cleanedText = text.replace(")]}'\n", "").trim();
+        const responseArray = JSON.parse(cleanedText);
+        const arrayString = responseArray[0][2];
+        if (!arrayString) return null;
+        
+        return JSON.parse(arrayString)[1];
+    } catch (e) {
+        console.error("Google News decode error:", e.message);
+        return null;
+    }
+}
+
 // Helper to scrape og:image from article HTML
 async function scrapeOgImage(url) {
     try {
+        let targetUrl = url;
+        if (url.startsWith('https://news.google.com/')) {
+            const decoded = await decodeGoogleNewsUrl(url);
+            if (decoded) {
+                targetUrl = decoded;
+            } else {
+                return null; // Don't scrape Google News preview page logo
+            }
+        }
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconds timeout
         
-        const response = await fetch(url, {
+        const response = await fetch(targetUrl, {
             signal: controller.signal,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
@@ -425,9 +478,12 @@ module.exports = async function handler(req, res) {
 
     console.log(`Fetched ${textArticles.length} text articles and ${videoArticles.length} video articles.`);
 
-    // Fallback Image Scraping for sources without images in RSS (Amar Ujala, News24 Hindi, Aaj Tak)
-    const SCRAPE_SOURCES = ["Amar Ujala", "Amar Ujala Breaking", "News24 Hindi", "Aaj Tak"];
-    const SCRAPE_LIMIT = 10;
+    // Fallback Image Scraping for sources without images in RSS
+    const SCRAPE_SOURCES = [
+        "Amar Ujala", "Amar Ujala Breaking", "News24 Hindi", "Aaj Tak",
+        "Navbharat Times", "Times of India", "Hindustan Times", "NDTV India", "Zee News", "News18 Hindi"
+    ];
+    const SCRAPE_LIMIT = 5;
     
     const articlesBySource = {};
     for (const art of textArticles) {
@@ -448,6 +504,9 @@ module.exports = async function handler(req, res) {
                     const imgUrl = await scrapeOgImage(art.u);
                     if (imgUrl) {
                         art.i = getOptimizedImageUrl(imgUrl);
+                        console.log(`[Scrape SUCCESS] ${art.s}: ${art.i}`);
+                    } else {
+                        console.log(`[Scrape FAILED/NO_IMAGE] ${art.s}: ${art.u}`);
                     }
                 })());
             }
