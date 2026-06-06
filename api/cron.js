@@ -1,5 +1,129 @@
 const { sources } = require('../lib/sources');
 const { parseFeed } = require('../lib/parser');
+const { getOptimizedImageUrl } = require('../lib/imageProxy');
+const http2 = require('http2');
+const zlib = require('zlib');
+
+// Custom HTTP/2 client with automatic compression decompression and browser headers
+function fetchHttp2(url, timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+        let client;
+        try {
+            const parsedUrl = new URL(url);
+            client = http2.connect(parsedUrl.origin, {
+                settings: { enablePush: false }
+            });
+            
+            client.on('error', (err) => {
+                reject(err);
+            });
+
+            client.setTimeout(timeoutMs, () => {
+                client.destroy();
+                reject(new Error('HTTP/2 Connection Timeout'));
+            });
+
+            const req = client.request({
+                ':method': 'GET',
+                ':path': parsedUrl.pathname + parsedUrl.search,
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'accept-language': 'en-US,en;q=0.5',
+                'accept-encoding': 'gzip, deflate, br'
+            });
+
+            req.setTimeout(timeoutMs, () => {
+                req.destroy();
+                client.close();
+                reject(new Error('HTTP/2 Request Timeout'));
+            });
+
+            let status = null;
+            let headers = {};
+            req.on('response', (hdrs) => {
+                status = hdrs[':status'];
+                headers = hdrs;
+            });
+
+            const chunks = [];
+            req.on('data', (chunk) => {
+                chunks.push(chunk);
+            });
+
+            req.on('end', () => {
+                client.close();
+                const buffer = Buffer.concat(chunks);
+                const encoding = headers['content-encoding'];
+                
+                if (status !== 200) {
+                    resolve({ status, body: '' });
+                    return;
+                }
+
+                if (encoding === 'gzip') {
+                    zlib.gunzip(buffer, (err, decompressed) => {
+                        if (err) reject(err);
+                        else resolve({ status, body: decompressed.toString('utf8') });
+                    });
+                } else if (encoding === 'deflate') {
+                    zlib.inflate(buffer, (err, decompressed) => {
+                        if (err) reject(err);
+                        else resolve({ status, body: decompressed.toString('utf8') });
+                    });
+                } else if (encoding === 'br') {
+                    zlib.brotliDecompress(buffer, (err, decompressed) => {
+                        if (err) reject(err);
+                        else resolve({ status, body: decompressed.toString('utf8') });
+                    });
+                } else {
+                    resolve({ status, body: buffer.toString('utf8') });
+                }
+            });
+            
+            req.on('error', (err) => {
+                if (client) client.close();
+                reject(err);
+            });
+
+            req.end();
+        } catch (e) {
+            if (client) client.close();
+            reject(e);
+        }
+    });
+}
+
+// Helper to scrape og:image from article HTML
+async function scrapeOgImage(url) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 seconds timeout
+        
+        const response = await fetch(url, {
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
+            }
+        });
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) return null;
+        const html = await response.text();
+        
+        const match = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+                      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+        
+        if (match && match[1]) {
+            let img = match[1].trim();
+            if (img.startsWith('//')) img = 'https:' + img;
+            return img;
+        }
+        return null;
+    } catch (e) {
+        console.error(`Scrape error for ${url}:`, e.message);
+        return null;
+    }
+}
 
 // Firebase Configuration
 const FIREBASE_DB_URL = "https://chromux-news-default-rtdb.firebaseio.com/";
@@ -248,21 +372,41 @@ module.exports = async function handler(req, res) {
     for (let i = 0; i < sources.length; i += CHUNK_SIZE) {
         const chunk = sources.slice(i, i + CHUNK_SIZE);
         const promises = chunk.map(async (source) => {
+            let xml = null;
+            
+            // Try HTTP/2 first (often bypasses Cloudflare on server IPs)
             try {
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), 12000);
-                const response = await fetch(source.url, {
-                    signal: controller.signal,
-                    headers: { 'User-Agent': 'Chromux-NewsBot/2.0' }
-                });
-                clearTimeout(timer);
-
-                if (response.ok) {
-                    const xml = await response.text();
-                    return { items: parseFeed(xml, source), isVideo: source.type === 'video' };
+                const result = await fetchHttp2(source.url, 10000);
+                if (result.status === 200) {
+                    xml = result.body;
                 }
-            } catch (error) {
-                console.error(`Fetch error for ${source.name}:`, error.message);
+            } catch (h2Error) {
+                // Silent fallback: try standard fetch on error
+            }
+
+            // Fallback to standard HTTP/1.1 fetch
+            if (!xml) {
+                try {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), 12000);
+                    const response = await fetch(source.url, {
+                        signal: controller.signal,
+                        headers: { 'User-Agent': 'Chromux-NewsBot/2.0' }
+                    });
+                    clearTimeout(timer);
+
+                    if (response.ok) {
+                        xml = await response.text();
+                    } else {
+                        console.error(`Fetch error for ${source.name}: HTTP ${response.status}`);
+                    }
+                } catch (error) {
+                    console.error(`Fetch error for ${source.name}:`, error.message);
+                }
+            }
+
+            if (xml) {
+                return { items: parseFeed(xml, source), isVideo: source.type === 'video' };
             }
             return { items: [], isVideo: false };
         });
@@ -280,6 +424,40 @@ module.exports = async function handler(req, res) {
     }
 
     console.log(`Fetched ${textArticles.length} text articles and ${videoArticles.length} video articles.`);
+
+    // Fallback Image Scraping for sources without images in RSS (Amar Ujala, News24 Hindi, Aaj Tak)
+    const SCRAPE_SOURCES = ["Amar Ujala", "Amar Ujala Breaking", "News24 Hindi", "Aaj Tak"];
+    const SCRAPE_LIMIT = 10;
+    
+    const articlesBySource = {};
+    for (const art of textArticles) {
+        if (SCRAPE_SOURCES.includes(art.s)) {
+            if (!articlesBySource[art.s]) articlesBySource[art.s] = [];
+            articlesBySource[art.s].push(art);
+        }
+    }
+    
+    const scrapePromises = [];
+    for (const sourceName of SCRAPE_SOURCES) {
+        const sourceArticles = articlesBySource[sourceName] || [];
+        const targets = sourceArticles.slice(0, SCRAPE_LIMIT);
+        
+        for (const art of targets) {
+            if (!art.i && art.u) {
+                scrapePromises.push((async () => {
+                    const imgUrl = await scrapeOgImage(art.u);
+                    if (imgUrl) {
+                        art.i = getOptimizedImageUrl(imgUrl);
+                    }
+                })());
+            }
+        }
+    }
+    
+    if (scrapePromises.length > 0) {
+        console.log(`Scraping missing images for ${scrapePromises.length} articles...`);
+        await Promise.allSettled(scrapePromises);
+    }
 
     // PRE-FILTER: Keep only the top 2000 newest/best articles before heavy O(N^2) TF-IDF dedup
     const nowForFilter = Date.now();
@@ -417,3 +595,6 @@ module.exports = async function handler(req, res) {
         totalArticles: finalArticles.length
     });
 };
+
+module.exports.fetchHttp2 = fetchHttp2;
+
