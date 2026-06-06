@@ -93,9 +93,18 @@ function fetchHttp2(url, timeoutMs = 10000) {
     });
 }
 
+// Global stats for live server diagnostics
+let stats = {
+    decodesAttempted: 0,
+    decodesSucceeded: 0,
+    scrapesAttempted: 0,
+    scrapesSucceeded: 0
+};
+
 // Decodes Google News encrypted article URL using batchexecute API
 async function decodeGoogleNewsUrl(googleUrl) {
     try {
+        stats.decodesAttempted++;
         const response = await fetch(googleUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -129,7 +138,11 @@ async function decodeGoogleNewsUrl(googleUrl) {
         const arrayString = responseArray[0][2];
         if (!arrayString) return null;
         
-        return JSON.parse(arrayString)[1];
+        const resultUrl = JSON.parse(arrayString)[1];
+        if (resultUrl) {
+            stats.decodesSucceeded++;
+        }
+        return resultUrl;
     } catch (e) {
         console.error("Google News decode error:", e.message);
         return null;
@@ -139,6 +152,7 @@ async function decodeGoogleNewsUrl(googleUrl) {
 // Helper to scrape og:image from article HTML
 async function scrapeOgImage(url) {
     try {
+        stats.scrapesAttempted++;
         let targetUrl = url;
         if (url.startsWith('https://news.google.com/')) {
             const decoded = await decodeGoogleNewsUrl(url);
@@ -169,6 +183,7 @@ async function scrapeOgImage(url) {
         if (match && match[1]) {
             let img = match[1].trim();
             if (img.startsWith('//')) img = 'https:' + img;
+            stats.scrapesSucceeded++;
             return img;
         }
         return null;
@@ -404,6 +419,12 @@ function findTrendingAndDedup(allArticles) {
 // ============================================================
 module.exports = async function handler(req, res) {
     console.log("Starting full news fetch and Firebase sync...");
+    
+    // Reset stats for request diagnostics
+    stats.decodesAttempted = 0;
+    stats.decodesSucceeded = 0;
+    stats.scrapesAttempted = 0;
+    stats.scrapesSucceeded = 0;
     const TS = Date.now();
     
     // Require a shared secret because this endpoint can rewrite the whole news cache.
@@ -651,7 +672,8 @@ module.exports = async function handler(req, res) {
     res.status(200).json({ 
         success: true, 
         message: "News synchronized to Firebase successfully",
-        totalArticles: finalArticles.length
+        totalArticles: finalArticles.length,
+        stats: stats
     });
 };
 
