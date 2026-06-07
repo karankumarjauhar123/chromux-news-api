@@ -63,12 +63,23 @@ module.exports = async function handler(req, res) {
 
     let baseArticles = [];
     if (lang === 'hi' || lang === 'en') {
-        // User strictly wants a language
+        // User wants a specific language
         baseArticles = [...((fbData.languages && fbData.languages[lang]) || [])];
         if (category !== 'all' && category !== 'trending') {
             baseArticles = baseArticles.filter(a => a.c === category);
         } else if (category === 'trending') {
             baseArticles = baseArticles.filter(a => a.tr > 0);
+        }
+        
+        // FALLBACK: If specific language has 0 articles for this category,
+        // fall back to showing all-language articles for that category.
+        // This prevents empty feeds when Hindi users pick World/Tech/Sports etc.
+        if (baseArticles.length === 0 && category !== 'all' && category !== 'trending') {
+            baseArticles = [...(fbData.categories[category] || [])];
+        }
+        // Also fallback for 'all' category if language pool is completely empty
+        if (baseArticles.length === 0 && category === 'all') {
+            baseArticles = [...(fbData.categories['all'] || [])];
         }
     } else {
         // Language 'all' -> select by category
